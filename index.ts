@@ -1,4 +1,4 @@
-import express, { Request, Response } from "express";
+import express, { NextFunction, Request, Response } from "express";
 import { json, urlencoded } from "body-parser";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
@@ -35,6 +35,68 @@ const users = [
 
 app.set("port", process.env.PORT || 5000);
 app.set("host", process.env.HOST || "0.0.0.0");
+
+const RATE_LIMIT_WINDOW_MS = 1 * 60 * 1000; // 1분 (밀리초 단위)
+const MAX_REQUESTS = 1; // 1분 동안 허용할 최대 요청 수
+
+// IP 요청 데이터 타입 정의
+interface RequestData {
+  count: number;
+  startTime: number;
+}
+
+// 메모리 기반 데이터 저장소 (IP별 요청 데이터 관리)
+const ipRequestCounts: Map<string, RequestData> = new Map();
+
+// 미들웨어: 호출 제한 로직
+function rateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
+  const clientIp = req.ip; // 클라이언트 IP 가져오기
+  const currentTime = Date.now();
+
+  // 클라이언트 요청이 favicon.ico라면 로그를 출력하지 않음
+  if (req.path === "/favicon.ico") {
+    return next();
+  }
+
+  // 해당 IP의 요청 기록이 없으면 초기화
+  if (!ipRequestCounts.has(clientIp)) {
+    ipRequestCounts.set(clientIp, { count: 1, startTime: currentTime });
+    console.log(`[${clientIp}] 접속 횟수: 1`);
+    return next();
+  }
+
+  // IP의 요청 데이터 가져오기
+  const requestData = ipRequestCounts.get(clientIp)!; // 데이터가 반드시 존재함을 단언
+  const elapsedTime = currentTime - requestData.startTime;
+
+  // 제한 시간 (RATE_LIMIT_WINDOW_MS)이 지났으면 초기화
+  if (elapsedTime > RATE_LIMIT_WINDOW_MS) {
+    ipRequestCounts.set(clientIp, { count: 1, startTime: currentTime });
+    console.log(`[${clientIp}] 접속 횟수: 1`);
+    return next();
+  }
+
+  // 요청 횟수 증가
+  requestData.count += 1;
+  ipRequestCounts.set(clientIp, requestData); // 업데이트
+
+  // 로그 출력
+  console.log(`[${clientIp}] 접속 횟수: ${requestData.count}`);
+
+  // 요청 제한을 초과했더라도 요청을 계속 처리
+  if (requestData.count > MAX_REQUESTS) {
+    res.setHeader("X-RateLimit-Exceeded", "true"); // 제한 초과 여부를 헤더에 추가
+    return res.status(429).json({
+      error: "Too many requests. Please try again later.",
+      requestCount: requestData.count,
+    });
+  }
+
+  next();
+}
+
+// API 경로에 미들웨어 적용
+app.use(rateLimitMiddleware);
 
 // Middleware 설정
 app.use(json());
