@@ -1,5 +1,5 @@
-import express, { NextFunction, Request, Response } from "express";
-import { json, urlencoded } from "body-parser";
+import express from "express";
+import bodyParser from "body-parser";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
 import cors from "cors";
@@ -13,7 +13,7 @@ interface RequestData {
 const app = express();
 const RATE_LIMIT = 1 * 60 * 1000; // 1분 (밀리초 단위)
 const MAX_REQUESTS = 100; // 1분 동안 허용할 최대 요청 수
-const whitelist = ["http://localhost:5000"]; // 접속 허용 주소
+const whitelist = ["http://localhost:3000"]; // 접속 허용 주소
 const secretKey = "your-secret-key"; // 실제로는 보안에 강한 랜덤한 키를 사용해야 합니다.
 // 메모리 기반 데이터 저장소 (IP별 요청 데이터 관리)
 const ipRequestCounts: Map<string, RequestData> = new Map();
@@ -34,11 +34,11 @@ const users = [
   { username: "user2", password: "pass2", nickname: "User Two" },
 ];
 
-app.set("port", process.env.PORT || 5000);
+app.set("port", process.env.PORT || 3000);
 app.set("host", process.env.HOST || "0.0.0.0");
 
-// 미들웨어: 호출 제한 로직
-function rateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
+// API 경로에 미들웨어 적용
+app.use((req, res, next) => {
   const clientIp = req.ip; // 클라이언트 IP 가져오기
   const currentTime = Date.now();
   // 클라이언트 요청이 favicon.ico라면 로그를 출력하지 않음
@@ -74,15 +74,12 @@ function rateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
     });
   }
   next();
-}
-
-// API 경로에 미들웨어 적용
-app.use(rateLimitMiddleware);
+});
 
 // Middleware 설정
-app.use(json());
 app.use(cookieParser());
-app.use(urlencoded({ extended: false }));
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: false }));
 app.use(
   cors({
     origin(req, res) {
@@ -96,7 +93,7 @@ app.use(
   })
 );
 
-app.all("/*", (req: Request, res: Response, next: () => void) => {
+app.all("/*", (req, res, next: () => void) => {
   const ip = req.headers.origin;
   if (whitelist.indexOf(ip as string) !== -1 || !ip) {
     res.header("Access-Control-Allow-Origin", ip as string);
@@ -106,24 +103,24 @@ app.all("/*", (req: Request, res: Response, next: () => void) => {
 });
 
 // get 통신
-app.get("/", function (req: Request, res: Response) {
+app.get("/", function (req, res) {
   res.send("접속된 아이피: " + req.ip);
 });
 
-app.get("/posts", (req: Request, res: Response) => {
+app.get("/posts", (req, res) => {
   res.json({ posts });
 });
 
-app.get("/todos", (req: Request, res: Response) => {
+app.get("/todos", (req, res) => {
   res.json(todos);
 });
 
-app.get("/logout", (req: Request, res: Response) => {
+app.get("/logout", (req, res) => {
   res.clearCookie("jwt");
   res.redirect("/");
 });
 
-app.get("/cookie", (req: Request, res: Response) => {
+app.get("/cookie", (req, res) => {
   res.cookie("cookieName", "cookieValue", {
     expires: new Date(Date.now() + 900000), // 쿠키의 만료일 (현재 시간 + 900000 밀리초)
     httpOnly: true,
@@ -131,7 +128,7 @@ app.get("/cookie", (req: Request, res: Response) => {
   res.send({ message: "쿠키가 설정되었습니다." });
 });
 
-app.get("/form", (req: Request, res: Response) => {
+app.get("/form", (req, res) => {
   let userNickname = "";
   const jwtCookie = req.cookies.jwt as string;
   if (jwtCookie) {
@@ -172,21 +169,21 @@ app.get("/form", (req: Request, res: Response) => {
 });
 
 // 포스트
-app.post("/posts", (req: Request, res: Response) => {
+app.post("/posts", (req, res) => {
   const { title, content } = req.body;
   const newPost = { id: Date.now(), title, content };
   posts.push(newPost);
   res.status(201).json({ post: newPost });
 });
 
-app.post("/todos", (req: Request, res: Response) => {
+app.post("/todos", (req, res) => {
   const { text } = req.body;
   const newTodo = { id: todos.length + 1, text };
   todos.push(newTodo);
   res.status(200).json(newTodo);
 });
 
-app.post("/login", (req: Request, res: Response) => {
+app.post("/login", (req, res) => {
   const { username, password } = req.body;
   const user = users.find(
     (u) => u.username === username && u.password === password
@@ -204,7 +201,7 @@ app.post("/login", (req: Request, res: Response) => {
 });
 
 // put 통신
-app.put("/posts/:id", (req: Request, res: Response) => {
+app.put("/posts/:id", (req, res) => {
   const id = parseInt(req.params.id);
   const { title, content } = req.body;
   const index = posts.findIndex((post) => post.id === id);
@@ -216,7 +213,7 @@ app.put("/posts/:id", (req: Request, res: Response) => {
   }
 });
 
-app.put("/todos/:id", (req: Request, res: Response) => {
+app.put("/todos/:id", (req, res) => {
   const { id } = req.params;
   const { text } = req.body;
   const todo = todos.find((todo) => todo.id === parseInt(id));
@@ -229,7 +226,7 @@ app.put("/todos/:id", (req: Request, res: Response) => {
 });
 
 // delete 통신
-app.delete("/posts/:id", (req: Request, res: Response) => {
+app.delete("/posts/:id", (req, res) => {
   const id = parseInt(req.params.id);
   const index = posts.findIndex((post) => post.id === id);
   if (index !== -1) {
@@ -240,7 +237,7 @@ app.delete("/posts/:id", (req: Request, res: Response) => {
   }
 });
 
-app.delete("/todos/:id", (req: Request, res: Response) => {
+app.delete("/todos/:id", (req, res) => {
   const { id } = req.params;
   const todo = todos.find((todo) => todo.id === parseInt(id));
   if (todo) {
