@@ -1,8 +1,12 @@
 import express from "express";
 import bodyParser from "body-parser";
 import cookieParser from "cookie-parser";
+import mysql from "mysql2/promise";
 import jwt from "jsonwebtoken";
+import multer from "multer";
 import cors from "cors";
+import path from "path";
+import fs from "fs";
 
 // IP 요청 데이터 타입 정의
 interface RequestData {
@@ -10,24 +14,58 @@ interface RequestData {
   startTime: number;
 }
 
+interface BnumResult extends mysql.RowDataPacket {
+  bnum: number;
+}
+
+interface BoardResult extends mysql.RowDataPacket {
+  bnum: number;
+  id: string;
+  title: string;
+  content: string;
+  writedate: string;
+}
+
+interface ImageResult extends mysql.RowDataPacket {
+  fnum: number;
+  bnum: number;
+  savefile: string;
+  filetype: string;
+  writedate: string;
+}
+
 const app = express();
 const RATE_LIMIT = 1 * 60 * 1000; // 1분 (밀리초 단위)
 const MAX_REQUESTS = 100; // 1분 동안 허용할 최대 요청 수
 const whitelist = ["http://localhost:3000"]; // 접속 허용 주소
 const secretKey = "your-secret-key"; // 실제로는 보안에 강한 랜덤한 키를 사용해야 합니다.
-// 메모리 기반 데이터 저장소 (IP별 요청 데이터 관리)
-const ipRequestCounts: Map<string, RequestData> = new Map();
+const ipRequestCounts: Map<string, RequestData> = new Map(); // 메모리 기반 데이터 저장소 (IP별 요청 데이터 관리)
 
-// Mock database (in-memory)
-let posts = [
-  { id: 1, title: "첫 번째 게시물", content: "첫 번째 게시물 내용" },
-  { id: 2, title: "두 번째 게시물", content: "두 번째 게시물 내용" },
-];
+// 데이터 베이스 연결
+const conn = mysql.createPool({
+  host: "localhost",
+  port: 3306,
+  user: "root",
+  password: "",
+  database: "nodeboard",
+});
 
-let todos = [
-  { id: 1, text: "Learn Node.js" },
-  { id: 2, text: "Build a REST API" },
-];
+// 저장소 폴더 관리
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, callback) => {
+      const uploadPath = "./uploads/";
+      if (!fs.existsSync(uploadPath)) {
+        fs.mkdirSync(uploadPath, { recursive: true });
+      }
+      callback(null, uploadPath);
+    },
+    filename: (req, file, callback) => {
+      const uniqueName = Date.now() + "-" + file.originalname;
+      callback(null, uniqueName);
+    },
+  }),
+});
 
 const users = [
   { username: "user1", password: "pass1", nickname: "User One" },
@@ -107,17 +145,9 @@ app.get("/", function (req, res) {
   res.send("접속된 아이피: " + req.ip);
 });
 
-app.get("/posts", (req, res) => {
-  res.json({ posts });
-});
-
-app.get("/todos", (req, res) => {
-  res.json(todos);
-});
-
 app.get("/logout", (req, res) => {
   res.clearCookie("jwt");
-  res.redirect("/");
+  res.redirect("/form");
 });
 
 app.get("/cookie", (req, res) => {
@@ -128,59 +158,87 @@ app.get("/cookie", (req, res) => {
   res.send({ message: "쿠키가 설정되었습니다." });
 });
 
+app.get("/view", async (req, res) => {
+  try {
+    const [rows] = await conn.query<BoardResult[]>("SELECT * FROM board");
+    res.json(rows);
+  } catch (err) {
+    console.error("Query execution failed:", err);
+    res.status(500).send("Server error");
+  }
+});
+
+app.get("/read/:bnum", async (req, res) => {
+  try {
+    const { bnum } = req.params;
+    const [rows] = await conn.query<BoardResult[]>(
+      "SELECT * FROM board WHERE bnum = ?",
+      [bnum]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Query execution failed:", err);
+    res.status(500).send("Server error");
+  }
+});
+
+app.get("/img/:bnum", async (req, res) => {
+  try {
+    const { bnum } = req.params;
+    const [rows] = await conn.query<ImageResult[]>(
+      "SELECT * FROM file WHERE bnum = ?",
+      [bnum]
+    );
+    if (rows.length > 0) {
+      const filePath = path.join("uploads", rows[0].savefile);
+      if (fs.existsSync(filePath)) {
+        res.sendFile(filePath, { root: "." });
+      } else {
+        res.status(404).send("File not found");
+      }
+    } else {
+      res.status(404).send("No file found for this board");
+    }
+  } catch (err) {
+    console.error("Query execution failed:", err);
+    res.status(500).send("Server error");
+  }
+});
+
 app.get("/form", (req, res) => {
-  let userNickname = "";
   const jwtCookie = req.cookies.jwt as string;
   if (jwtCookie) {
-    const decoded = jwt.verify(jwtCookie, secretKey) as {
-      username: string;
-      nickname: string;
-    };
-    userNickname = decoded.nickname;
-  }
-  res.send(`
-  <!DOCTYPE html>
-  <html lang="en">
+    try {
+      const decoded = jwt.verify(jwtCookie, secretKey) as {
+        username: string;
+        nickname: string;
+      };
+      const { nickname } = decoded;
+      if (nickname) {
+        res.send(`
+<!DOCTYPE html>
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Document</title>
   </head>
   <body>
-    <h1>${userNickname ? `Welcome back, ${userNickname}!` : "Login"}</h1>
-    ${
-      userNickname
-        ? `<p><a href="/logout">Logout</a></p>`
-        : `
-    <form action="/login" method="post">
-      <label for="username">Username:</label>
-      <input type="text" id="username" name="username" required />
-      <br />
-      <label for="password">Password:</label>
-      <input type="password" id="password" name="password" required />
-      <br />
-      <button type="submit">Login</button>
-    </form>
-    `
-    }
+    <h1>${`Welcome back, ${nickname}!`}</h1>
+    <p><a href="/logout">Logout</a></p>
   </body>
-  </html>
-  `);
-});
-
-// 포스트
-app.post("/posts", (req, res) => {
-  const { title, content } = req.body;
-  const newPost = { id: Date.now(), title, content };
-  posts.push(newPost);
-  res.status(201).json({ post: newPost });
-});
-
-app.post("/todos", (req, res) => {
-  const { text } = req.body;
-  const newTodo = { id: todos.length + 1, text };
-  todos.push(newTodo);
-  res.status(200).json(newTodo);
+</html>
+          `);
+      } else {
+        res.sendFile(path.join(__dirname, "login.html"));
+      }
+    } catch {
+      res.clearCookie("jwt");
+      res.redirect("/form");
+    }
+  } else {
+    res.sendFile(path.join(__dirname, "login.html"));
+  }
 });
 
 app.post("/login", (req, res) => {
@@ -200,51 +258,54 @@ app.post("/login", (req, res) => {
   }
 });
 
-// put 통신
-app.put("/posts/:id", (req, res) => {
-  const id = parseInt(req.params.id);
-  const { title, content } = req.body;
-  const index = posts.findIndex((post) => post.id === id);
-  if (index !== -1) {
-    posts[index] = { id, title, content };
-    res.json({ post: posts[index] });
-  } else {
-    res.status(404).json({ error: "Post not found" });
+app.post("/insert", upload.single("img"), async (req, res) => {
+  try {
+    const body = req.body;
+    const [rows] = await conn.query<BnumResult[]>(
+      "SELECT COUNT(*) + 1 AS bnum FROM board"
+    );
+    const { bnum } = rows[0];
+    const sql =
+      "INSERT INTO board (bnum, id, title, content, writedate) VALUES (?, ?, ?, ?, NOW())";
+    const params = [bnum, body.id, body.title, body.content];
+    await conn.query(sql, params);
+    if (req.file) {
+      const fileSql =
+        "INSERT INTO file (bnum, savefile, filetype, writedate) VALUES (?, ?, ?, NOW())";
+      const fileParams = [bnum, req.file.filename, req.file.mimetype];
+      await conn.query(fileSql, fileParams);
+    }
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("Query execution failed:", err);
+    res.status(500).send("Server error");
   }
 });
 
-app.put("/todos/:id", (req, res) => {
-  const { id } = req.params;
-  const { text } = req.body;
-  const todo = todos.find((todo) => todo.id === parseInt(id));
-  if (todo) {
-    todo.text = text;
-    res.json(todo);
-  } else {
-    return res.status(404).json({ error: "Todo not found" });
+// put 통신
+app.put("/update/:bnum", async (req, res) => {
+  try {
+    const { bnum } = req.params;
+    const { id, title, content } = req.body;
+    const sql =
+      "UPDATE board SET id = ?, title = ?, content = ? WHERE bnum = ?";
+    await conn.query(sql, [id, title, content, bnum]);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("Query execution failed:", err);
+    res.status(500).send("Server error");
   }
 });
 
 // delete 통신
-app.delete("/posts/:id", (req, res) => {
-  const id = parseInt(req.params.id);
-  const index = posts.findIndex((post) => post.id === id);
-  if (index !== -1) {
-    posts.splice(index, 1);
-    res.sendStatus(204);
-  } else {
-    res.status(404).json({ error: "Post not found" });
-  }
-});
-
-app.delete("/todos/:id", (req, res) => {
-  const { id } = req.params;
-  const todo = todos.find((todo) => todo.id === parseInt(id));
-  if (todo) {
-    todos = todos.filter((todo) => todo.id !== parseInt(id));
-    res.status(200).json({ message: "Todo deleted successfully" });
-  } else {
-    return res.status(404).json({ error: "Todo not found" });
+app.delete("/delete/:bnum", async (req, res) => {
+  try {
+    const { bnum } = req.params;
+    await conn.query("DELETE FROM board WHERE bnum = ?", [bnum]);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("Query execution failed:", err);
+    res.status(500).send("Server error");
   }
 });
 
